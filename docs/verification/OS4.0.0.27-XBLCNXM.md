@@ -28,4 +28,4 @@
 
 ## 留痕
 
-CI 运行：[33349593748](https://github.com/mcxiaochenn/HyperDusk/actions/runs/33349593748) 已通过 JDK 25、Android 37 回退编译入口、单元测试、Lint、Debug APK 和 SHA-256。构件 `app-debug.apk` SHA-256：`2fe4a5c8848594635d3954ff546cf811533b5ec3efe475ded09a50ba0b6c02de`。本地 Gradle 仍受 Windows Java 25 loopback/U DS 限制。回退方式为在 LSPosed 禁用模块并重启，或卸载 APK；无需修改系统分区或 LSPosed 数据目录。
+CI 运行：[33349593748](https://github.com/mcxiaochenn/HyperDusk/actions/runs/33349593748) 已通过 JDK 25、Android 37 回退编译入口、单元测试、Lint、Debug APK 和 SHA-256；该工件对应安全门禁加固前的提交。构件 `app-debug.apk` SHA-256：`2fe4a5c8848594635d3954ff546cf811533b5ec3efe475ded09a50ba0b6c02de`。后续提交继续触发同一工作流，待 GitHub Actions 页面确认最新工件后替换此处校验值。本地 Gradle 仍受 Windows loopback 限制。回退方式为在 LSPosed 禁用模块并重启，或卸载 APK；无需修改系统分区或 LSPosed 数据目录。
