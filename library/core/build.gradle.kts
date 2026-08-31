@@ -7,9 +7,9 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 35
+        minSdk = 37
 
-        buildConfigField("String", "APP_MODULE_ID", "\"com.sevtinge.hyperceiler\"")
+        buildConfigField("String", "APP_MODULE_ID", "\"com.mcxiaochen.hyperdusk\"")
     }
 
     buildFeatures {
@@ -30,8 +30,6 @@ java {
 }
 
 dependencies {
-    // api(projects.library.hook)
     api(projects.library.common)
     api(projects.library.provision)
-    api(libs.appiconloader)
 }

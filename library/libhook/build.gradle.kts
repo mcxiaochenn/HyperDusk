@@ -17,9 +17,9 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 35
+        minSdk = 37
 
-        buildConfigField("String", "APP_MODULE_ID", "\"com.sevtinge.hyperceiler\"")
+        buildConfigField("String", "APP_MODULE_ID", "\"com.mcxiaochen.hyperdusk\"")
     }
 
     buildFeatures {
@@ -52,29 +52,14 @@ kotlin {
 
 dependencies {
     api(libs.core)
-    api(libs.fragment)
-    api(libs.recyclerview)
-    api(libs.coordinatorlayout)
-    api(libs.constraintlayout) {
-        exclude("androidx.appcompat", "appcompat")
-    }
-
-    api(libs.core.ktx)
-    api(libs.expansion)
     compileOnlyApi(projects.library.hiddenApi)
 
     // libxposed API 102 (compileOnly, runs against framework on device)
     compileOnlyApi(libs.libxposed.api)
     api(libs.libxposed.service)
 
-    api(libs.dexkit)
     api(libs.ezhooktool.core)
     api(libs.ezhooktool.xposed102)
-    api(libs.hiddenapibypass)
-    api(libs.gson)
-    api(libs.hyperfocusapi)
-    api(libs.superlyricapi)
-    api(libs.lunarcalendar)
 
     api(projects.library.processor)
     api(projects.library.common)
