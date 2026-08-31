@@ -138,8 +138,11 @@ public final class VolumeUpTorch extends BaseHook {
     }
 
     private static boolean isTorchEnabled() {
-        return ACTION_TORCH.equals(PrefsBridge.getString(PREF_KEY, ACTION_NONE));
+        return isTorchAction(PrefsBridge.getString(PREF_KEY, ACTION_NONE));
     }
+
+    /** 严格白名单解析，未知值和空值均回到未设置。 */
+    public static boolean isTorchAction(String value) { return ACTION_TORCH.equals(value); }
 
     private static int primaryKey(Object value) {
         try {

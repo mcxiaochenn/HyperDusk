@@ -64,4 +64,5 @@ dependencies {
     api(projects.library.processor)
     api(projects.library.common)
     annotationProcessor(projects.library.processor)
+    testImplementation("junit:junit:4.13.2")
 }
