@@ -12,7 +12,7 @@ import io.github.libxposed.service.XposedService;
 import io.github.libxposed.service.XposedServiceHelper;
 
 /** 设置进程只负责偏好读写和 LSPosed 远程偏好同步。 */
-public final class Application extends fan.app.Application
+public final class Application extends android.app.Application
     implements XposedServiceHelper.OnServiceListener {
     public static volatile boolean moduleActivated;
 
@@ -23,6 +23,7 @@ public final class Application extends fan.app.Application
     public void onCreate() {
         super.onCreate();
         PrefsBridge.initForApp(this);
+        XposedServiceHelper.registerListener(this);
     }
 
     @Override

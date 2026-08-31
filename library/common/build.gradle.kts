@@ -32,7 +32,7 @@ java {
 }
 
 dependencies {
-    api(libs.bundles.miuix)
+    api(libs.core)
     // libxposed API 102
     compileOnlyApi(libs.libxposed.api)
 }
