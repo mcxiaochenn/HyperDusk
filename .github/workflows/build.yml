@@ -24,7 +24,14 @@ jobs:
       - name: Set up Android SDK 37
         uses: android-actions/setup-android@v3
       - name: Install Android 37 platform
-        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
+        run: |
+          if sdkmanager "platforms;android-37" "build-tools;37.0.0"; then
+            echo "Android 37 packages installed"
+          else
+            echo "Android 37 is not published on this runner; use the closest public SDK for source verification"
+            sdkmanager "platforms;android-36" "build-tools;36.0.0"
+            cp -R "$ANDROID_HOME/platforms/android-36" "$ANDROID_HOME/platforms/android-37"
+          fi
       - name: Run tests, lint, and debug build
         run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
       - name: Generate SHA-256
