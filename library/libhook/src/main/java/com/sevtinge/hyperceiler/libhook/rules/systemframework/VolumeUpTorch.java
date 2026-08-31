@@ -86,30 +86,47 @@ public final class VolumeUpTorch extends BaseHook {
             DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
             android.view.Display display = displays == null ? null : displays.getDisplay(0);
             boolean screenOn = display != null && display.getState() == android.view.Display.STATE_ON;
-            boolean keyguardNotActive = true;
-            Object policy = findFieldContaining(rule, "policy");
-            if (policy != null) keyguardNotActive = invokeBoolean(policy, "isKeyGuardNotActive");
-            return !screenOn || !keyguardNotActive;
+            if (!screenOn) return true;
+            Object policy = findFieldWithMethod(rule, "isKeyGuardNotActive");
+            String methodName = "isKeyGuardNotActive";
+            if (policy == null) {
+                methodName = "isKeyguardNotActive";
+                policy = findFieldWithMethod(rule, methodName);
+            }
+            Boolean notActive = policy == null ? null : invokeNullableBoolean(policy, methodName);
+            return notActive != null && !notActive;
         } catch (Throwable ignored) {
             return false;
         }
     }
 
     private static boolean invokeBoolean(Object value, String methodName) {
+        Boolean result = invokeNullableBoolean(value, methodName);
+        return result != null && result;
+    }
+
+    private static Boolean invokeNullableBoolean(Object value, String methodName) {
         try {
             Method method = value.getClass().getDeclaredMethod(methodName);
             method.setAccessible(true);
-            return Boolean.TRUE.equals(method.invoke(value));
-        } catch (Throwable ignored) { return false; }
+            Object result = method.invoke(value);
+            return result instanceof Boolean ? (Boolean) result : null;
+        } catch (Throwable ignored) { return null; }
     }
 
-    private static Object findFieldContaining(Object value, String fragment) {
+    private static Object findFieldWithMethod(Object value, String methodName) {
         Class<?> type = value.getClass();
         while (type != null) {
             for (Field field : type.getDeclaredFields()) {
-                if (field.getName().toLowerCase().contains(fragment)) {
-                    try { field.setAccessible(true); return field.get(value); }
-                    catch (Throwable ignored) { return null; }
+                try {
+                    Object candidate = field.get(value);
+                    if (candidate != null) {
+                        candidate.getClass().getDeclaredMethod(methodName);
+                        field.setAccessible(true);
+                        return candidate;
+                    }
+                } catch (Throwable ignored) {
+                    // Continue searching other policy-holder fields.
                 }
             }
             type = type.getSuperclass();
