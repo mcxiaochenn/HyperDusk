@@ -81,7 +81,9 @@ public final class VolumeUpTorch extends BaseHook {
     private static boolean nativePreconditionsAllow(Object rule) {
         try {
             if ((((Number) fieldValue(rule, "mPolicyFlag", 0)).intValue() & 0x01000000) != 0) return false;
-            if (invokeBoolean(rule, "isAudioActive") || invokeBoolean(rule, "isCameraShowInSubscreen")) return false;
+            Boolean audioActive = invokeNullableBoolean(rule, "isAudioActive");
+            Boolean subScreenCamera = invokeNullableBoolean(rule, "isCameraShowInSubscreen");
+            if (audioActive == null || subScreenCamera == null || audioActive || subScreenCamera) return false;
             Context context = (Context) fieldValue(rule, "mContext");
             DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
             android.view.Display display = displays == null ? null : displays.getDisplay(0);
@@ -100,14 +102,10 @@ public final class VolumeUpTorch extends BaseHook {
         }
     }
 
-    private static boolean invokeBoolean(Object value, String methodName) {
-        Boolean result = invokeNullableBoolean(value, methodName);
-        return result != null && result;
-    }
-
     private static Boolean invokeNullableBoolean(Object value, String methodName) {
         try {
-            Method method = value.getClass().getDeclaredMethod(methodName);
+            Method method = findNoArgMethod(value.getClass(), methodName);
+            if (method == null) return null;
             method.setAccessible(true);
             Object result = method.invoke(value);
             return result instanceof Boolean ? (Boolean) result : null;
@@ -119,10 +117,10 @@ public final class VolumeUpTorch extends BaseHook {
         while (type != null) {
             for (Field field : type.getDeclaredFields()) {
                 try {
+                    field.setAccessible(true);
                     Object candidate = field.get(value);
                     if (candidate != null) {
-                        candidate.getClass().getDeclaredMethod(methodName);
-                        field.setAccessible(true);
+                        if (findNoArgMethod(candidate.getClass(), methodName) == null) continue;
                         return candidate;
                     }
                 } catch (Throwable ignored) {
@@ -130,6 +128,14 @@ public final class VolumeUpTorch extends BaseHook {
                 }
             }
             type = type.getSuperclass();
+        }
+        return null;
+    }
+
+    private static Method findNoArgMethod(Class<?> type, String name) {
+        while (type != null) {
+            try { return type.getDeclaredMethod(name); }
+            catch (NoSuchMethodException ignored) { type = type.getSuperclass(); }
         }
         return null;
     }
