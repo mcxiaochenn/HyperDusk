@@ -60,14 +60,14 @@ public final class VolumeUpTorch extends BaseHook {
     }
 
     private void onMaxCount(HookParam param) {
-        Object rule = param.getThis();
+        Object rule = param.getThisObject();
         if (primaryKey(rule) == VOLUME_UP) {
             param.setResult(isTorchEnabled() ? MAX_DOUBLE_PRESS : 1);
         }
     }
 
     private void onMultiPress(HookParam param) {
-        Object rule = param.getThis();
+        Object rule = param.getThisObject();
         Object[] args = param.getArgs();
         if (primaryKey(rule) != VOLUME_UP || args.length < 3 || !isTorchEnabled()) return;
         if (args[2] instanceof Integer count && count == MAX_DOUBLE_PRESS) {
@@ -84,10 +84,10 @@ public final class VolumeUpTorch extends BaseHook {
             Object originalRule = param.getArgs()[1];
             Object clonedInfo = cloneInfo(info);
             Object clonedRule = cloneVolumeRule(originalRule, clonedInfo);
-            Method addRule = param.getThis().getClass().getMethod("addRule", info.getClass(),
+            Method addRule = param.getThisObject().getClass().getMethod("addRule", info.getClass(),
                 originalRule.getClass().getSuperclass());
             installed = true;
-            addRule.invoke(param.getThis(), clonedInfo, clonedRule);
+            addRule.invoke(param.getThisObject(), clonedInfo, clonedRule);
             XposedLog.i(TAG, "system", "Registered native volume-up double-press rule");
         } catch (Throwable t) {
             XposedLog.e(TAG, "system", "Native volume-up rule unavailable; fail closed", t);
