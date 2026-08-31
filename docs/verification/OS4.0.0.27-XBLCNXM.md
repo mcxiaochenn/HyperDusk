@@ -28,4 +28,4 @@
 
 ## 留痕
 
-本地执行命令、APK SHA-256 和 GitHub Actions 运行链接在发布构建后补录。回退方式为在 LSPosed 禁用模块并重启，或卸载 APK；无需修改系统分区或 LSPosed 数据目录。
+CI 运行：[33349241494](https://github.com/mcxiaochenn/HyperDusk/actions/runs/33349241494) 已通过 JDK 25、Android 37 回退编译入口、单元测试、Lint、Debug APK 和 SHA-256。构件 `app-debug.apk` SHA-256：`16f5cf4b83affe42db3f9e9585d31bdfcfa37438aa3f28e4996c7efee5aeed8d`。本地 Gradle 仍受 Windows Java 25 loopback/U DS 限制。回退方式为在 LSPosed 禁用模块并重启，或卸载 APK；无需修改系统分区或 LSPosed 数据目录。
