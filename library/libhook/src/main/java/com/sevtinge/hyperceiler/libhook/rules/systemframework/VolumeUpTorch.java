@@ -6,6 +6,7 @@
 package com.sevtinge.hyperceiler.libhook.rules.systemframework;
 
 import android.content.Context;
+import android.hardware.display.DisplayManager;
 import android.os.Bundle;
 import android.os.Handler;
 
@@ -70,10 +71,50 @@ public final class VolumeUpTorch extends BaseHook {
         Object rule = param.getThisObject();
         Object[] args = param.getArgs();
         if (primaryKey(rule) != VOLUME_UP || args.length < 3 || !isTorchEnabled()) return;
-        if (args[2] instanceof Integer count && count == MAX_DOUBLE_PRESS) {
+        if (args[2] instanceof Integer count && count == MAX_DOUBLE_PRESS && nativePreconditionsAllow(rule)) {
             triggerTorch(rule);
             param.setResult(null);
         }
+    }
+
+    /** 与 HyperOS 4 VolumeDownKeyRule 相同的安全前置条件，失败即交还原生音量处理。 */
+    private static boolean nativePreconditionsAllow(Object rule) {
+        try {
+            if (((Number) fieldValue(rule, "mPolicyFlag", 0)).intValue() & 0x01000000) != 0) return false;
+            if (invokeBoolean(rule, "isAudioActive") || invokeBoolean(rule, "isCameraShowInSubscreen")) return false;
+            Context context = (Context) fieldValue(rule, "mContext");
+            DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+            android.view.Display display = displays == null ? null : displays.getDisplay(0);
+            boolean screenOn = display != null && display.getState() == android.view.Display.STATE_ON;
+            boolean keyguardNotActive = true;
+            Object policy = findFieldContaining(rule, "policy");
+            if (policy != null) keyguardNotActive = invokeBoolean(policy, "isKeyGuardNotActive");
+            return !screenOn || !keyguardNotActive;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static boolean invokeBoolean(Object value, String methodName) {
+        try {
+            Method method = value.getClass().getDeclaredMethod(methodName);
+            method.setAccessible(true);
+            return Boolean.TRUE.equals(method.invoke(value));
+        } catch (Throwable ignored) { return false; }
+    }
+
+    private static Object findFieldContaining(Object value, String fragment) {
+        Class<?> type = value.getClass();
+        while (type != null) {
+            for (Field field : type.getDeclaredFields()) {
+                if (field.getName().toLowerCase().contains(fragment)) {
+                    try { field.setAccessible(true); return field.get(value); }
+                    catch (Throwable ignored) { return null; }
+                }
+            }
+            type = type.getSuperclass();
+        }
+        return null;
     }
 
     private void onAddRule(HookParam param) {
