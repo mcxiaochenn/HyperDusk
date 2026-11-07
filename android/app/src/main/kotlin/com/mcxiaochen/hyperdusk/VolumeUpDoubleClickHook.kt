@@ -1,7 +1,7 @@
 package com.mcxiaochen.hyperdusk
 
-import android.app.KeyguardManager
 import android.content.Context
+import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -44,11 +44,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * 为什么这样不会吞掉正常音量调节：
  *  - interceptKey 返回 void，原按键事件照常进入后续的 interceptKeyBeforeDispatching → AudioService 调音量；
- *  - 我们只在「灭屏或锁屏」时触发动作（见 [isScreenOffOrLocked]），亮屏解锁状态只更新一个时间戳，
+ *  - 我们只在**灭屏**时触发动作（见 [isScreenOff]，AOD 也算灭屏），亮屏（含锁屏未解锁）只更新一个时间戳，
  *    音量键行为与未装模块时完全一致。
  *
- * 触发行为对齐 VolumeDownKeyRule（VolumeDownKeyRule.java:74-98）：
- *  - 灭屏或锁屏才触发（亮屏+未锁屏直接放弃）；
+ * 触发行为对齐 VolumeDownKeyRule（VolumeDownKeyRule.java:74-98、128-142）：
+ *  - 仅灭屏时触发（本版按真机反馈收紧：亮屏即使锁屏也不触发，减少误触；AOD/doze 时 isInteractive=false 正好放行）；
+ *  - 媒体播放/通话中不触发（对齐 VolumeDownKeyRule#isAudioActive，:128-142）；
  *  - 触发前 wakeUp（唤醒屏幕），再 dispatch；
  *  - dispatch 复用 ShortCutActionsUtils#triggerFunction(String, String, Bundle, boolean)
  *    （ShortCutActionsUtils.java:1272，4 参 public），action 传 "double_click_power_key"，
@@ -105,6 +106,7 @@ internal object VolumeUpDoubleClickHook {
     private val loggedTrigger = AtomicBoolean(false)
     private val loggedTriggerFailure = AtomicBoolean(false)
     private val loggedInvalidValue = AtomicBoolean(false)
+    private val loggedAudioSkip = AtomicBoolean(false)
 
     @Volatile
     private var mainHandler: Handler? = null
@@ -285,7 +287,8 @@ internal object VolumeUpDoubleClickHook {
             }
 
             val function = readConfiguredFunction(module, context) ?: return
-            if (!isScreenOffOrLocked(context, interactiveFallback)) return
+            if (!isScreenOff(context, interactiveFallback)) return
+            if (isAudioActive(module, context)) return
 
             wakeUp(module, context, function)
             if (ShortCutActionsBridge.trigger(function)) {
@@ -318,15 +321,86 @@ internal object VolumeUpDoubleClickHook {
     }
 
     /**
-     * 与 VolumeDownKeyRule#volumeDownKeyDoubleClick 的 gate 一致：亮屏且未锁屏时不触发。
-     * 只用公开 API：PowerManager#isInteractive()（灭屏判定）+ KeyguardManager#isKeyguardLocked()（锁屏判定）。
+     * 触发门控：仅屏幕灭时触发（真机反馈修复）。
+     *
+     * 第一版是「灭屏或锁屏」，真机上亮屏锁屏时误触太多；用户要求收紧为：
+     * 除 AOD 外，亮屏（哪怕锁屏未解锁）一律不触发。AOD/doze 时 `PowerManager#isInteractive()` 为 false，
+     * 因此这里只判断 `!isInteractive`，AOD 正好放行。
      */
-    private fun isScreenOffOrLocked(context: Context, interactiveFallback: Boolean): Boolean {
+    private fun isScreenOff(context: Context, interactiveFallback: Boolean): Boolean {
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val screenOn = powerManager?.isInteractive ?: interactiveFallback
-        if (!screenOn) return true
-        val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-        return keyguardManager?.isKeyguardLocked ?: false
+        val interactive = powerManager?.isInteractive ?: interactiveFallback
+        return !interactive
+    }
+
+    /**
+     * 媒体播放/通话中不触发（对齐 VolumeDownKeyRule#isAudioActive，VolumeDownKeyRule.java:128-142）：
+     *  1) `AudioManager.getMode()` 落在 (0, 8) 开区间（通话/录音等）→ 视为活跃；
+     *  2) 否则用 `AudioSystem.isStreamActive(stream, 0)` 检查（隐藏类，反射；跳过 stream type 1，与原实现一致）；
+     *  3) AudioSystem 反射不可用时退化公开 API `AudioManager.isMusicActive()`。
+     */
+    private fun isAudioActive(module: XposedModule, context: Context): Boolean {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        if (audioManager != null) {
+            try {
+                val mode = audioManager.mode
+                if (mode > 0 && mode < 8) {
+                    if (loggedAudioSkip.compareAndSet(false, true)) {
+                        module.log(Log.INFO, TAG, "volume up double click skipped: audio mode=$mode")
+                    }
+                    return true
+                }
+            } catch (t: Throwable) {
+                // 继续走 stream 检查
+            }
+        }
+        val anyStreamActive = isAnyAudioStreamActive()
+        val active = anyStreamActive ?: try {
+            audioManager?.isMusicActive == true
+        } catch (t: Throwable) {
+            false
+        }
+        if (active && loggedAudioSkip.compareAndSet(false, true)) {
+            module.log(Log.INFO, TAG, "volume up double click skipped: audio stream active")
+        }
+        return active
+    }
+
+    /**
+     * 反射 `AudioSystem#getNumStreamTypes()` + `isStreamActive(int, int)`。
+     * 返回 null 表示反射不可用（调用方退化 AudioManager.isMusicActive）。
+     * 与原实现的遍历一致：stream type 1（STREAM_VOICE_CALL）跳过，其余任一活跃即视为音频活跃。
+     */
+    private fun isAnyAudioStreamActive(): Boolean? {
+        val audioSystem = try {
+            Class.forName("android.media.AudioSystem")
+        } catch (t: Throwable) {
+            null
+        } ?: return null
+        val numStreamTypes = try {
+            audioSystem.getMethod("getNumStreamTypes").invoke(null) as? Int
+        } catch (t: Throwable) {
+            null
+        } ?: return null
+        val isStreamActive = try {
+            audioSystem.getMethod(
+                "isStreamActive",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+            )
+        } catch (t: Throwable) {
+            null
+        } ?: return null
+        for (streamType in 0 until numStreamTypes) {
+            if (streamType == 1) continue
+            val active = try {
+                isStreamActive.invoke(null, streamType, 0) as? Boolean ?: false
+            } catch (t: Throwable) {
+                false
+            }
+            if (active) return true
+        }
+        return false
     }
 
     /**

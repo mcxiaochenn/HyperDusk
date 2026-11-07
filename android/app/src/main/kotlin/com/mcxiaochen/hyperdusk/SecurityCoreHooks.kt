@@ -2,6 +2,7 @@ package com.mcxiaochen.hyperdusk
 
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.provider.Settings
 import android.util.Log
 import io.github.libxposed.api.XposedModule
@@ -18,13 +19,16 @@ import java.util.Locale
  *  - 「双击电源键」页 = `...gesture.powerkey.DoubleClickPowerKeySettingsActivity` + Fragment `j2.b`（混淆，§4.1）；
  *  - 快捷手势 list 的 Fragment 被混淆为 `p030f2.h`，但页面/分类可以用 preference key 识别（§5.1），
  *    所以 A 项完全不依赖混淆类名；
- *  - 背部轻敲选项数据源 = `p030f2.t#e(String[], int)`（混淆类名，§3.2/§3.4），用结构守卫 + 失败降级；
+ *  - 背部轻敲选项数据源 = `MiShortcutFeatureUtil#e(String[], int)`（§3.2/§3.4）。⚠ jadx 把它的包名
+ *    deobf 成伪包名 `p030f2`，**真机真实类名是 `f2.t`**（dex 证据：`Lf2/t;`，同样有
+ *    `static f(Context)` 返回自身与 `e(String[],int)` 返回 LinkedHashMap）；运行时 `p030f2.t` 不存在。
+ *    代码里两类名都保留为候选，真实名优先；
  *  - securitycore 自身所有手势设置都写 `Settings.System` / `MiuiSettings.System`（§6.2），
  *    本进程 hook 里写设置不需要模块 App 自己有权限。
  *
  * 设计原则（任务硬约束）：
  *  - 稳定类名（Activity）+ 运行时 Fragment 发现 作为主锚点；
- *  - 混淆类名（`j2.b` / `p030f2.t`）只在「结构守卫」通过后使用，守卫 = 父类链 + 方法签名 + 字段/实例内容，
+ *  - 混淆类名（`j2.b` / `f2.t`）只在「结构守卫」通过后使用，守卫 = 父类链 + 方法签名 + 字段/实例内容，
  *    绝不以类名作为唯一依据；守卫失败只降级该功能并打 WARN，页面本身不能崩；
  *  - 每处 hook 独立 try-catch，hook 内部异常统一吞掉（PROTECTIVE 之外的二次保险）。
  */
@@ -42,7 +46,13 @@ internal object SecurityCoreHooks {
 
     // ---- 混淆名候选（只作为查找起点，必须通过 [DoubleClickPowerKeyUiHooks] / [BackTapTorchOptionHook] 的守卫） ----
     const val CANDIDATE_DOUBLE_CLICK_FRAGMENT_CLASS = "j2.b"
-    const val CANDIDATE_SHORTCUT_UTIL_CLASS = "p030f2.t"
+
+    /**
+     * `MiShortcutFeatureUtil` 类名候选。
+     * 真机 dex 里真实类名是 `f2.t`（`Lf2/t;`）；jadx 输出里的 `p030f2.t` 是 deobf 伪包名，运行时不存在，
+     * 仅作为兼容旧报告的兜底候选。解析方 [BackTapTorchOptionHook] 对每个候选都跑同一套结构守卫。
+     */
+    val CANDIDATE_SHORTCUT_UTIL_CLASSES = listOf("f2.t", "p030f2.t")
 
     // ---- A/B/C 三项共用的 key / extra / 文案 ----
     /** Settings.System key：必须与 system_server 侧 task-4 的 VolumeUpDoubleClickHook 完全一致 */
@@ -175,6 +185,41 @@ internal object SecurityCoreHooks {
         return null
     }
 
+    /**
+     * 把 PreferenceGroup 里已有的一个 Preference 移动到指定索引（真机反馈：新行要插在「双击电源键」之后）。
+     *
+     * PreferenceGroup 没有公开的「按索引插入」API（`addPreference` 只按 order 追加/插入），
+     * 所以先正常 `addPreference` 完成挂载/排序，再反射拿内部 Preference 列表（`f4509c`，字段名被 R8 混淆，
+     * 用「List 且包含目标 Preference」定位）做一次 move，最后 `notifyHierarchyChanged` 让列表刷新。
+     */
+    @Suppress("UNCHECKED_CAST")
+    fun movePreferenceToIndex(group: Any?, preference: Any?, targetIndex: Int): Boolean {
+        if (group == null || preference == null || targetIndex < 0) return false
+        val internalList = ScReflect.firstFieldValue(group) { _, value ->
+            value is List<*> && value.any { it === preference }
+        } as? MutableList<Any?> ?: return false
+        val currentIndex = internalList.indexOfFirst { it === preference }
+        if (currentIndex < 0) return false
+        if (currentIndex == targetIndex) {
+            notifyPreferenceHierarchyChanged(group)
+            return true
+        }
+        return try {
+            val item = internalList.removeAt(currentIndex)
+            internalList.add(targetIndex.coerceAtMost(internalList.size), item)
+            notifyPreferenceHierarchyChanged(group)
+            true
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /** 通知 PreferenceGroup/Preference 刷新列表（两者方法名在本 build 都保留，存在哪个用哪个）。 */
+    fun notifyPreferenceHierarchyChanged(target: Any?) {
+        ScReflect.call(target, listOf("notifyHierarchyChanged"))
+        ScReflect.call(target, listOf("notifyChanged"))
+    }
+
     /** 父类守卫：类属于 androidx.preference 页面 Fragment 家族（androidx.preference.z / miuix.preference.x）。 */
     fun isPreferenceFragment(clazz: Class<*>): Boolean {
         var current: Class<*>? = clazz
@@ -188,6 +233,64 @@ internal object SecurityCoreHooks {
     /** 中英文文案（没有现成资源可用时）；设备中文占绝大多数。 */
     fun localized(zh: String, en: String): String =
         if (Locale.getDefault().language.startsWith("zh")) zh else en
+
+    // ---- 功能值 → 显示标题（A 项新行 summary） ----
+
+    /** 资源解析失败时的中文兜底（真机只测了中国版）。 */
+    private val FUNCTION_TITLE_FALLBACK = mapOf(
+        FUNCTION_NONE to "无操作",
+        FUNCTION_TURN_ON_TORCH to "手电筒",
+        "launch_camera" to "相机",
+        "mi_pay" to "小米钱包",
+        "launch_smarthome" to "小米一指连",
+    )
+
+    /**
+     * 把 Settings 里的功能值解析成显示标题（用于「双击音量上键」行 summary）。
+     *
+     * 取标题的方式与 securitycore 自己一致：按资源名从 securitycore 字符串资源解析
+     * （功能值就是资源名；`none` 对应 `key_none`；`mi_pay` 按 NFC 能力对应
+     * `mi_pay_summary` / `mi_pay_summary_without_nfc`，与 j2.b 页面标题同源，见报告 §4.3）。
+     * 资源解析失败时退中文兜底，再不行直接显示原值；空值按 `none` 处理。
+     */
+    @Suppress("DEPRECATION")
+    fun functionTitle(context: Context, rawFunction: String?): String {
+        val function = rawFunction?.trim().orEmpty()
+        val normalized = if (function.isEmpty()) FUNCTION_NONE else function
+        val resourceNames = when (normalized) {
+            FUNCTION_NONE -> listOf("key_none")
+            "mi_pay" -> if (hasNfc(context)) {
+                listOf("mi_pay_summary", "mi_pay")
+            } else {
+                listOf("mi_pay_summary_without_nfc", "mi_pay")
+            }
+
+            else -> listOf(normalized)
+        }
+        val resources = context.resources
+        for (resourceName in resourceNames) {
+            val resourceId = try {
+                resources.getIdentifier(resourceName, "string", PKG_SECURITYCORE)
+            } catch (t: Throwable) {
+                0
+            }
+            if (resourceId != 0) {
+                val title = try {
+                    resources.getString(resourceId)
+                } catch (t: Throwable) {
+                    null
+                }
+                if (!title.isNullOrEmpty()) return title
+            }
+        }
+        return FUNCTION_TITLE_FALLBACK[normalized] ?: normalized
+    }
+
+    private fun hasNfc(context: Context): Boolean = try {
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_NFC)
+    } catch (t: Throwable) {
+        false
+    }
 
     /**
      * 国际版守卫：`DoubleClickPowerKeySettingsActivity#onCreate` 在国际版会直接 finish()

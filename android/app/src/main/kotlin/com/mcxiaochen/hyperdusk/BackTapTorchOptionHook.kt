@@ -11,23 +11,25 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 需求 C：给「背部轻敲」页的双击/三击下拉列表加「手电筒（turn_on_torch）」选项。
  *
  * 逆向依据（.research/notes/securitycore-gestures.md §3）：
- *  - 背部轻敲页 = `com.miui.miinput.gesture.backtap.BackTapSettingsActivity` + Fragment `p042h2.c`（混淆，§3.1）；
- *  - 两个下拉的选项唯一数据源 = `p030f2.t#e(String[] actions, int orderType)`（混淆类，§3.2/§3.4）：
+ *  - 背部轻敲页 = `com.miui.miinput.gesture.backtap.BackTapSettingsActivity` + Fragment `h2.c`（jadx 输出里的
+ *    `p042h2.c` 是 deobf 伪包名，§3.1）；
+ *  - 两个下拉的选项唯一数据源 = `MiShortcutFeatureUtil#e(String[] actions, int orderType)`（§3.2/§3.4）：
  *    它把「功能 → (类型 → action 列表)」里命中查询 action 的功能收进 `LinkedHashMap<功能值, 标题>`；
  *    背部轻敲页用 `e(new String[]{"back_double_tap"}, 2)` / `e(new String[]{"back_triple_tap"}, 2)`（c.java:108-109）；
  *  - 当前系统配置里 `turn_on_torch` 只绑定了 `double_click_power_key`，没有绑定 back 系列，
  *    所以它不在返回 map 里 → 下拉里没有手电筒（§3.3）；
- *  - 顺序：`t.g(2)` 的固定顺序表里 `turn_on_torch` 排在 `screen_shot` 之后（§3.2），
+ *  - 顺序：`g(2)` 的固定顺序表里 `turn_on_torch` 排在 `screen_shot` 之后（§3.2），
  *    所以这里也插入到 `screen_shot` 之后，与「Settings 旧实现」的顺序一致。
  *
  * 只改 UI 不够：system_server 的 `MiuiBackTapGestureService#removeUnsupportedFunction()` 会把
  * back 手势上的 `turn_on_torch` 强制清回 none（system-gestures.md §1.3），该问题已由 task-4
  * 的 `SystemServerHooks.installBackTapTorchHook` 解决；这里只负责让用户能选到。
  *
- * 混淆类名 `p030f2.t` 的运行时守卫（不是唯一依据）：
- *  1) 存在 `public static t f(Context)` 单例工厂且返回类型就是本类（p030f2/t.java:94）；
- *  2) 存在实例方法 `e(String[], int)` 且返回 Map（p030f2/t.java:309，本类里签名唯一）；
- *  3) 实例运行时可从字段里取到 Context（用来解析资源标题；字段名混淆时按类型兜底）。
+ * 类名（真机修复）：jadx 输出里的 `p030f2.t` 是 deobf 伪包名，运行时不存在；真机 dex 里真实类名是
+ * **`f2.t`**（`Lf2/t;`）。候选顺序 = [f2.t, p030f2.t]（后者仅兼容旧报告），每个候选都要通过同一套结构守卫：
+ *  1) 存在 `public static t f(Context)` 单例工厂且返回类型就是本类（反编译 p030f2/t.java:94）；
+ *  2) 存在实例方法 `e(String[], int)` 且返回 Map（p030f2/t.java:309，本类里该签名唯一）；
+ *  3) 类里有非静态的 Context/Object 状态字段（对应字段 f7069a，p030f2/t.java:70/820-824）。
  * 任一守卫失败：只打 WARN，跳过本功能，不影响其它 hook。
  */
 internal object BackTapTorchOptionHook {
@@ -43,8 +45,8 @@ internal object BackTapTorchOptionHook {
             module.log(
                 Log.WARN,
                 TAG,
-                "back tap torch option skipped: " +
-                    "${SecurityCoreHooks.CANDIDATE_SHORTCUT_UTIL_CLASS} not found or structural guard failed",
+                "back tap torch option skipped: none of " +
+                    "${SecurityCoreHooks.CANDIDATE_SHORTCUT_UTIL_CLASSES} found or structural guard failed",
             )
             return
         }
@@ -146,8 +148,19 @@ internal object BackTapTorchOptionHook {
     // 结构守卫
     // ---------------------------------------------------------------
 
+    /**
+     * 按候选类名逐个尝试 [SecurityCoreHooks.CANDIDATE_SHORTCUT_UTIL_CLASSES]，每个候选跑同一套结构守卫。
+     * 真机真实名 `f2.t` 排第一；`p030f2.t`（jadx deobf 伪名）仅作兼容兜底。
+     */
     private fun resolveShortcutUtilClass(classLoader: ClassLoader): Class<*>? {
-        val clazz = classLoader.findClassOrNull(SecurityCoreHooks.CANDIDATE_SHORTCUT_UTIL_CLASS) ?: return null
+        for (className in SecurityCoreHooks.CANDIDATE_SHORTCUT_UTIL_CLASSES) {
+            val clazz = classLoader.findClassOrNull(className) ?: continue
+            if (passesStructuralGuards(clazz)) return clazz
+        }
+        return null
+    }
+
+    private fun passesStructuralGuards(clazz: Class<*>): Boolean {
         // 守卫 1：静态单例工厂 f(Context) 返回自身（p030f2/t.java:94）
         val hasFactory = clazz.declaredMethods.any { method ->
             Modifier.isStatic(method.modifiers) &&
@@ -156,15 +169,14 @@ internal object BackTapTorchOptionHook {
                 method.parameterTypes[0] == Context::class.java &&
                 method.returnType == clazz
         }
-        if (!hasFactory) return null
+        if (!hasFactory) return false
         // 守卫 2：e(String[], int) → Map（p030f2/t.java:309；本类里该签名唯一）
-        if (findFunctionMapMethod(clazz) == null) return null
+        if (findFunctionMapMethod(clazz) == null) return false
         // 守卫 3：确实带 Context 状态的字段（p030f2/t.java:70/815-824）
-        val hasStateField = clazz.declaredFields.any { field ->
+        return clazz.declaredFields.any { field ->
             !Modifier.isStatic(field.modifiers) &&
                 (field.type == Context::class.java || field.type == Any::class.java)
         }
-        return if (hasStateField) clazz else null
     }
 
     private fun findFunctionMapMethod(clazz: Class<*>): Method? {
