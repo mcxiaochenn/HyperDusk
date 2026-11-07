@@ -12,3 +12,7 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# 例外：CI 固定 debug 签名的 keystore 需要提交进仓库（公开的 debug 签名，无安全风险）；
+# release keystore 仍由上面的 *.keystore 规则忽略，只通过 GitHub Secrets 注入。
+!app/debug.keystore

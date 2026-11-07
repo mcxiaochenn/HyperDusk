@@ -47,7 +47,7 @@ adb shell settings get system hyperdusk_double_click_volume_up
 
 ## 已验证与未验证的边界
 
-- CI（`.github/workflows/verify.yml`）验证：代码生成物无 diff、Rust 格式/测试/clippy、Flutter analyze/test、legacy 符号扫描、debug APK 构建与 APK 结构审计。
+- CI（`.github/workflows/verify.yml`）验证：代码生成物无 diff、Rust 格式/测试/clippy、Flutter analyze/test、legacy 符号扫描、debug + release APK 构建、签名证书指纹校验与 APK 结构审计。
 - **功能行为尚未在真机上完成验证**：所有 Hook 是否真正回调、设置页注入是否生效、手势端到端是否可用，都需要在真机上确认。待验证清单见「真机验证清单」。
 
 ## 已知限制
@@ -88,14 +88,25 @@ flutter test --no-pub
 flutter build apk --debug --no-pub --target-platform android-arm64,android-x64
 ```
 
-Debug APK 位于 `build/app/outputs/flutter-apk/app-debug.apk`。它只使用调试签名，不作为正式发布包。
+Debug APK 位于 `build/app/outputs/flutter-apk/app-debug.apk`。它使用仓库内固定的 debug 签名，不作为正式发布包。
+
+### 签名
+
+- **debug**：CI 与本地构建固定使用仓库内的 `android/app/debug.keystore`（别名 `androiddebugkey`），
+  因此不同次构建的 debug APK 签名一致，可以直接覆盖安装/升级；证书 SHA-256 指纹记录在 `.research/notes/signing.md`。
+- **release**：release keystore 不进仓库；CI 从 GitHub Secrets（`RELEASE_KEYSTORE_BASE64`、`RELEASE_KEYSTORE_PASSWORD`、
+  `RELEASE_KEY_ALIAS`、`RELEASE_KEY_PASSWORD`）解码后签名，并校验证书指纹与固定值一致。
+- 本地构建 release 时，设置 `RELEASE_KEYSTORE_FILE`（keystore 路径）、`RELEASE_KEYSTORE_PASSWORD`、
+  `RELEASE_KEY_ALIAS`、`RELEASE_KEY_PASSWORD` 即可使用正式签名；未设置时 release 构建退化为 debug 签名（仅用于本地验证）。
 
 CI 在此基础上还会：
 
 - 用 `git diff --exit-code` 校验 flutter_rust_bridge 生成物；
 - 扫描 legacy 污染符号（禁止旧模块标识符）；
-- 审计 APK 内容：`META-INF/xposed/{java_init.list,module.prop,scope.list}` 存在、`scope.list` 必须恰好是上述四行、
-  `lib/arm64-v8a/libhyperdusk_core.so` 与 `lib/x86_64/libhyperdusk_core.so` 存在、dex 内无 legacy 符号，并输出 SHA256SUMS。
+- 构建 debug 与 release 两个 APK（release 使用 Secrets 中的固定 release 签名）；
+- 校验两个 APK 的签名证书 SHA-256 指纹与固定值一致（签名漂移直接失败）；
+- 审计两个 APK 的内容：`META-INF/xposed/{java_init.list,module.prop,scope.list}` 存在、`scope.list` 必须恰好是上述四行、
+  `lib/arm64-v8a/libhyperdusk_core.so` 与 `lib/x86_64/libhyperdusk_core.so` 存在、dex 内无 legacy 符号，并分别输出 SHA256SUMS。
 
 ### 真机验证清单
 

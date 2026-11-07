@@ -10,9 +10,16 @@ on:
 permissions:
   contents: read
 
+env:
+  # 固定签名证书指纹（SHA-256，小写、无冒号）。来源与重新生成方式见 .research/notes/signing.md。
+  # 若这两个常量与实际签名不一致，下面的 Verify APK signing certificates 步骤会直接失败（防止签名漂移）。
+  DEBUG_CERT_SHA256: cd87fd56c93a92b2cf8f781a743705821240adda3a8a845e0803b69461ce2c52
+  RELEASE_CERT_SHA256: 6c94ac955a6167ca24aa67e671ad1105373f5966723e25cb2b4d0c937cbbadbf
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -69,30 +76,145 @@ jobs:
             exit 1
           fi
 
+      - name: Decode release signing key
+        shell: bash
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # release keystore 不进仓库：CI 从 GitHub Secrets 解码到 runner 临时目录，再通过环境变量交给 Gradle。
+          # 未配置 secrets 时 release 构建退化为固定的 debug 签名（本地/CI 都能出包），签名校验按 debug 指纹检查。
+          if [ -z "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "::warning::RELEASE_KEYSTORE_BASE64 is not configured; release APK will be signed with the fixed debug keystore."
+            echo "EXPECTED_RELEASE_CERT_SHA256=$DEBUG_CERT_SHA256" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ -z "$RELEASE_KEYSTORE_PASSWORD" ] || [ -z "$RELEASE_KEY_ALIAS" ] || [ -z "$RELEASE_KEY_PASSWORD" ]; then
+            echo "::error::RELEASE_KEYSTORE_BASE64 is set but RELEASE_KEYSTORE_PASSWORD / RELEASE_KEY_ALIAS / RELEASE_KEY_PASSWORD is missing."
+            exit 1
+          fi
+          keystore="$RUNNER_TEMP/hyperdusk-release.keystore"
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$keystore"
+          chmod 600 "$keystore"
+          {
+            echo "RELEASE_KEYSTORE_FILE=$keystore"
+            echo "RELEASE_KEYSTORE_PASSWORD=$RELEASE_KEYSTORE_PASSWORD"
+            echo "RELEASE_KEY_ALIAS=$RELEASE_KEY_ALIAS"
+            echo "RELEASE_KEY_PASSWORD=$RELEASE_KEY_PASSWORD"
+            echo "EXPECTED_RELEASE_CERT_SHA256=$RELEASE_CERT_SHA256"
+          } >> "$GITHUB_ENV"
+          echo "release keystore decoded: $(wc -c < "$keystore") bytes"
+
       - name: Build debug APK
         run: flutter build apk --debug --no-pub --target-platform android-arm64,android-x64
 
-      - name: Audit APK
+      - name: Build release APK
+        run: flutter build apk --release --no-pub --target-platform android-arm64,android-x64
+
+      - name: Verify APK signing certificates
         shell: bash
         run: |
-          apk=build/app/outputs/flutter-apk/app-debug.apk
-          unzip -l "$apk" | grep 'META-INF/xposed/java_init.list'
-          unzip -l "$apk" | grep 'META-INF/xposed/module.prop'
-          unzip -l "$apk" | grep 'META-INF/xposed/scope.list'
-          unzip -l "$apk" | grep 'lib/arm64-v8a/libhyperdusk_core.so'
-          unzip -l "$apk" | grep 'lib/x86_64/libhyperdusk_core.so'
+          set -euo pipefail
+          apksigner="$(find "${ANDROID_HOME}/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n1)"
+          if [ -z "$apksigner" ]; then
+            echo "::error::apksigner not found under ${ANDROID_HOME}/build-tools" >&2
+            exit 1
+          fi
+          echo "using $apksigner"
+
+          fingerprint() {
+            local out
+            if ! out="$("$apksigner" verify --print-certs "$1" 2>&1)"; then
+              echo "::error::apksigner verify failed for $1:" >&2
+              printf '%s\n' "$out" >&2
+              return 1
+            fi
+            printf '%s\n' "$out" \
+              | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
+              | awk 'NR==1 { print }' \
+              | tr -d ':' \
+              | tr '[:upper:]' '[:lower:]'
+          }
+
+          apk_dir=build/app/outputs/flutter-apk
+          expected_debug="$(printf '%s' "$DEBUG_CERT_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          expected_release="$(printf '%s' "${EXPECTED_RELEASE_CERT_SHA256:-$DEBUG_CERT_SHA256}" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+
+          actual_debug="$(fingerprint "$apk_dir/app-debug.apk")"
+          actual_release="$(fingerprint "$apk_dir/app-release.apk")"
+          echo "debug   expected=$expected_debug   actual=$actual_debug"
+          echo "release expected=$expected_release actual=$actual_release"
+
+          status=0
+          if [ -z "$actual_debug" ] || [ "$actual_debug" != "$expected_debug" ]; then
+            echo "::error::debug APK signing certificate mismatch (signature drift!)." >&2
+            status=1
+          fi
+          if [ -z "$actual_release" ] || [ "$actual_release" != "$expected_release" ]; then
+            echo "::error::release APK signing certificate mismatch (signature drift!)." >&2
+            status=1
+          fi
+          if [ "$status" -ne 0 ]; then
+            exit 1
+          fi
+          echo "APK signing certificates verified."
+
+      - name: Audit APK structure and scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk_dir=build/app/outputs/flutter-apk
           expected_scope="$(printf 'system\ncom.android.settings\ncom.android.systemui\ncom.miui.securitycore')"
-          actual_scope="$(unzip -p "$apk" META-INF/xposed/scope.list | tr -d '\r')"
-          if [ "$actual_scope" != "$expected_scope" ]; then
-            echo 'Unexpected scope.list content in APK:'
-            printf '%s\n' "$actual_scope" >&2
-            exit 1
-          fi
-          if unzip -p "$apk" classes.dex | strings | grep -E 'com\.sevtinge\.hyperceiler|VolumeUpTorch|hyperdusk_volume_up_double_press_action'; then
-            echo 'Legacy symbol found in APK.' >&2
-            exit 1
-          fi
-          sha256sum "$apk" | tee build/app/outputs/flutter-apk/SHA256SUMS
+
+          audit_apk() {
+            local apk="$1" label="$2"
+            echo "== auditing $label APK: $apk =="
+            unzip -l "$apk" | grep 'META-INF/xposed/java_init.list'
+            unzip -l "$apk" | grep 'META-INF/xposed/module.prop'
+            unzip -l "$apk" | grep 'META-INF/xposed/scope.list'
+            unzip -l "$apk" | grep 'lib/arm64-v8a/libhyperdusk_core.so'
+            unzip -l "$apk" | grep 'lib/x86_64/libhyperdusk_core.so'
+            local actual_scope
+            actual_scope="$(unzip -p "$apk" META-INF/xposed/scope.list | tr -d '\r')"
+            if [ "$actual_scope" != "$expected_scope" ]; then
+              echo "Unexpected scope.list content in $label APK:" >&2
+              printf '%s\n' "$actual_scope" >&2
+              exit 1
+            fi
+            if unzip -p "$apk" 'classes*.dex' | strings | grep -E 'com\.sevtinge\.hyperceiler|VolumeUpTorch|hyperdusk_volume_up_double_press_action'; then
+              echo "Legacy symbol found in $label APK." >&2
+              exit 1
+            fi
+            # java_init.list 里的入口类必须真实存在于 dex（release 走 R8 混淆时靠
+            # -adaptresourcefilecontents 把资源内容改成混淆后的类名；这里防止条目与 dex 脱节）
+            local init_class init_descriptor dex ok
+            init_class="$(unzip -p "$apk" META-INF/xposed/java_init.list | tr -d '\r' | awk 'NR==1 { print }')"
+            if [ -z "$init_class" ]; then
+              echo "Empty java_init.list in $label APK." >&2
+              exit 1
+            fi
+            init_descriptor="L$(printf '%s' "$init_class" | tr '.' '/')"
+            ok=0
+            for dex in $(unzip -Z1 "$apk" | grep -E '^classes[0-9]*\.dex$'); do
+              if unzip -p "$apk" "$dex" | strings | grep -F "$init_descriptor" >/dev/null; then
+                ok=1
+                break
+              fi
+            done
+            if [ "$ok" -ne 1 ]; then
+              echo "java_init.list entry '$init_class' not found in $label APK dex files." >&2
+              exit 1
+            fi
+          }
+
+          audit_apk "$apk_dir/app-debug.apk" debug
+          audit_apk "$apk_dir/app-release.apk" release
+
+          sha256sum "$apk_dir/app-debug.apk" | tee "$apk_dir/SHA256SUMS"
+          sha256sum "$apk_dir/app-release.apk" | tee "$apk_dir/SHA256SUMS-release"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -100,3 +222,10 @@ jobs:
           path: |
             build/app/outputs/flutter-apk/app-debug.apk
             build/app/outputs/flutter-apk/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hyperdusk-release
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/SHA256SUMS-release
