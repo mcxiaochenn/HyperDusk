@@ -81,7 +81,13 @@ jobs:
           unzip -l "$apk" | grep 'META-INF/xposed/scope.list'
           unzip -l "$apk" | grep 'lib/arm64-v8a/libhyperdusk_core.so'
           unzip -l "$apk" | grep 'lib/x86_64/libhyperdusk_core.so'
-          test -z "$(unzip -p "$apk" META-INF/xposed/scope.list | tr -d '\r\n[:space:]')"
+          expected_scope="$(printf 'system\ncom.android.settings\ncom.android.systemui\ncom.miui.securitycore')"
+          actual_scope="$(unzip -p "$apk" META-INF/xposed/scope.list | tr -d '\r')"
+          if [ "$actual_scope" != "$expected_scope" ]; then
+            echo 'Unexpected scope.list content in APK:'
+            printf '%s\n' "$actual_scope" >&2
+            exit 1
+          fi
           if unzip -p "$apk" classes.dex | strings | grep -E 'com\.sevtinge\.hyperceiler|VolumeUpTorch|hyperdusk_volume_up_double_press_action'; then
             echo 'Legacy symbol found in APK.' >&2
             exit 1
