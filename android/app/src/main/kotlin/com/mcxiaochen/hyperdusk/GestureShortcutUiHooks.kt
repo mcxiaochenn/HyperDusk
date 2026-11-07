@@ -29,12 +29,24 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    `GestureShortcutActivity#onResume` after 用 post+重试再刷新一次（页面 onResume 会把 summary 覆写）；
  *  - 新行原来追加在分类末尾：现在插到索引 1（「双击电源键」之后、「敲击手势/背部轻敲」之前；
  *    PreferenceGroup 没有公开索引 API，反射内部 Preference 列表后 move，见 SecurityCoreHooks.movePreferenceToIndex）。
+ *
+ * 真机反馈修复（第三轮，本轮）：
+ *  - 行样式：`miuix.preference.TextPreference#h(String)` 是**右侧文本**（R.id.text_right，
+ *    反编译 TextPreference.java:98-127），页面 `o()`（h.java:58-118）给「双击电源键」行设置的就是这个
+ *    右文本 = 当前功能标题；我们此前用 setSummary 写成了第二行，导致「右侧未启用 + 第二行功能名」叠加。
+ *    现在新行只用 `h(String)` 写右文本，与「双击电源键」行完全同源；行退化到普通 Preference 时才用 setSummary。
+ *  - 刷新时机：页面 Fragment 的 onResume 会调 o() 把 advanced_gesture 里所有 TextPreference 的右文本重设，
+ *    未知 key 走 else 分支显示「未启用」。所以在拿到页面 Fragment 实例后，动态 hook 它自己的 `onResume`
+ *    （类名混淆，不硬编码）after 重新写右文本 + 防御性重排一次；Activity onResume 的刷新保留作兜底。
+ *  - 排序：androidx adapter 重建时会 `Collections.sort(mPreferenceList)`（按 Preference.order），
+ *    只改 list 顺序会被排回去，因此 move 的实现改为「重排所有兄弟行的 order」，见 movePreferenceToIndex。
  */
 internal object GestureShortcutUiHooks {
 
     private const val TAG = HyperDuskModule.TAG
     private const val HOOK_ID = "securitycore:GestureShortcutActivity#onCreate"
     private const val HOOK_ID_RESUME = "securitycore:GestureShortcutActivity#onResume"
+    private const val HOOK_ID_FRAGMENT_ON_RESUME = "securitycore:GestureShortcutSettingsFragment#onResume"
 
     /** 新行插在 advanced_gesture 分类索引 1：双击电源键(index 0) 之后、敲击/背部轻敲之前。 */
     private const val ROW_TARGET_INDEX = 1
@@ -47,6 +59,7 @@ internal object GestureShortcutUiHooks {
     private val loggedPageMissing = AtomicBoolean(false)
     private val loggedRowFailure = AtomicBoolean(false)
     private val loggedSummaryRefreshed = AtomicBoolean(false)
+    private val fragmentResumeHookInstalled = AtomicBoolean(false)
 
     fun install(module: XposedModule, classLoader: ClassLoader, international: Boolean) {
         if (international) {
@@ -184,12 +197,40 @@ internal object GestureShortcutUiHooks {
             if (!tryInjectRow(module, classLoader, activity)) return false
             row = SecurityCoreHooks.findPreference(fragment, SecurityCoreHooks.ROW_KEY_VOLUME_UP)
         }
-        updateRowSummary(module, classLoader, activity, row)
+        refreshRow(module, classLoader, fragment, activity)
         return true
     }
 
-    /** 按当前 Settings 配置给新行写 summary（功能标题；未配置显示“无操作”），并通知列表刷新。 */
-    private fun updateRowSummary(
+    /**
+     * 刷新新行：右文本（当前功能标题）+ 防御性重排一次。
+     * 页面 Fragment onResume 里会调 o() 重设 advanced_gesture 所有 TextPreference 的右文本，
+     * 我们的行 key 不在它的白名单里 → 会被写成「未启用」，所以每次都要覆盖回来。
+     */
+    private fun refreshRow(
+        module: XposedModule,
+        classLoader: ClassLoader,
+        fragment: Any?,
+        context: Context,
+    ) {
+        val row = SecurityCoreHooks.findPreference(fragment, SecurityCoreHooks.ROW_KEY_VOLUME_UP) ?: return
+        updateRowFunctionText(module, classLoader, context, row)
+        // adapter 重建按 order 排序；正常不会被冲掉，这里防御性再钉一次（失败只 WARN）
+        val category = SecurityCoreHooks.findPreference(fragment, SecurityCoreHooks.PREF_KEY_ADVANCED_GESTURE)
+        if (category != null) {
+            SecurityCoreHooks.movePreferenceToIndex(module, category, row, ROW_TARGET_INDEX)
+        }
+    }
+
+    /**
+     * 写新行的「功能标题」（与「双击电源键」行完全同源）。
+     *
+     * 反编译依据：`miuix.preference.TextPreference#h(String)` 是**右侧文本**（TextPreference.java:98-110 存字段
+     * f11214j，onBindViewHolder 里 setText 到 R.id.text_right:113-127）；页面 `p030f2.h#o()`
+     * （h.java:58-118）给「双击电源键」行设置的就是 `textPreference.h(当前功能标题)`。
+     * 所以新行优先调用 `h(String)`（避免出现「右侧未启用 + 第二行功能名」叠加）；
+     * 只有行退化到普通 androidx Preference（没有 h 方法）时才用 setSummary。
+     */
+    private fun updateRowFunctionText(
         module: XposedModule,
         classLoader: ClassLoader,
         context: Context,
@@ -201,11 +242,58 @@ internal object GestureShortcutUiHooks {
             context,
             SecurityCoreHooks.SETTINGS_KEY_VOLUME_UP,
         )
-        val summary = SecurityCoreHooks.functionTitle(context, rawFunction)
-        if (!setProperty(row, listOf("setSummary"), summary)) return
+        val title = SecurityCoreHooks.functionTitle(context, rawFunction)
+        val viaRightText = setProperty(row, listOf("h"), title)
+        if (!viaRightText) {
+            setProperty(row, listOf("setSummary"), title)
+        }
         ScReflect.call(row, listOf("notifyChanged"))
         if (loggedSummaryRefreshed.compareAndSet(false, true)) {
-            module.log(Log.INFO, TAG, "gesture row summary = \"$summary\" (raw=$rawFunction)")
+            module.log(
+                Log.INFO,
+                TAG,
+                "gesture row text = \"$title\" (raw=$rawFunction, rightText=$viaRightText)",
+            )
+        }
+    }
+
+    /**
+     * 页面 Fragment 的 onResume after：刷新右文本 + 重排。
+     *
+     * Fragment 类名被混淆（jadx 输出 `p030f2.h`，真机真实类名同包系列如 `f2.h`），所以不硬编码类名，
+     * 用注入时拿到的真实 Fragment 实例的 `javaClass` 动态安装（只需装一次，后续 onResume 都会走）。
+     */
+    private fun installFragmentResumeHook(module: XposedModule, fragment: Any) {
+        if (fragmentResumeHookInstalled.get()) return
+        synchronized(this) {
+            if (fragmentResumeHookInstalled.get()) return
+            val onResume = fragment.javaClass.findMethodOrNull("onResume")
+            if (onResume == null) {
+                module.log(Log.WARN, TAG, "gesture fragment onResume hook skipped: method not found")
+                return
+            }
+            module.hookMethod(HOOK_ID_FRAGMENT_ON_RESUME, onResume) { chain ->
+                val result = chain.proceed()
+                try {
+                    val pageFragment = chain.getThisObject()
+                    val context = pageFragment?.let {
+                        ScReflect.call(it, listOf("getContext")) as? Context
+                            ?: ScReflect.call(it, listOf("getActivity")) as? Context
+                    }
+                    // Fragment 的 classLoader 就是 securitycore 的 app classloader
+                    val fragmentClassLoader = pageFragment?.javaClass?.classLoader
+                    if (pageFragment != null && context != null && fragmentClassLoader != null &&
+                        SecurityCoreHooks.findPreference(pageFragment, SecurityCoreHooks.PREF_KEY_FUNCTION_SHORTCUT) != null
+                    ) {
+                        refreshRow(module, fragmentClassLoader, pageFragment, context)
+                    }
+                } catch (t: Throwable) {
+                    module.log(Log.WARN, TAG, "gesture row refresh on fragment resume failed", t)
+                }
+                result
+            }
+            fragmentResumeHookInstalled.set(true)
+            module.log(Log.INFO, TAG, "gesture fragment onResume hook installed on ${fragment.javaClass.name}")
         }
     }
 
@@ -263,11 +351,14 @@ internal object GestureShortcutUiHooks {
         }
 
         // 真机反馈：新行要排在「双击电源键」之后（advanced_gesture 索引 1），而不是追加在分类末尾。
-        if (!SecurityCoreHooks.movePreferenceToIndex(category, row, ROW_TARGET_INDEX)) {
+        // movePreferenceToIndex 内部会重排所有兄弟行的 order（adapter 重建时按 order 排序）并打日志。
+        if (!SecurityCoreHooks.movePreferenceToIndex(module, category, row, ROW_TARGET_INDEX)) {
             module.log(Log.WARN, TAG, "move new row to index $ROW_TARGET_INDEX failed, keep appended position")
         }
-        // summary 显示当前配置的功能标题（页面 onResume 之后还会再刷新一次）。
-        updateRowSummary(module, classLoader, activity, row)
+        // 右文本 = 当前配置的功能标题（与「双击电源键」行同一显示位）；页面 onResume 之后会再刷新一次。
+        updateRowFunctionText(module, classLoader, activity, row)
+        // 页面 Fragment onResume 会调 o() 覆写右文本，动态 hook 它的 onResume after 做覆盖。
+        installFragmentResumeHook(module, fragment)
 
         if (loggedInjected.compareAndSet(false, true)) {
             module.log(

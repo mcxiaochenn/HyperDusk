@@ -186,33 +186,101 @@ internal object SecurityCoreHooks {
     }
 
     /**
-     * 把 PreferenceGroup 里已有的一个 Preference 移动到指定索引（真机反馈：新行要插在「双击电源键」之后）。
+     * 把 PreferenceGroup 里的一个 Preference 移动到指定索引（真机反馈：新行要插在「双击电源键」之后）。
      *
-     * PreferenceGroup 没有公开的「按索引插入」API（`addPreference` 只按 order 追加/插入），
-     * 所以先正常 `addPreference` 完成挂载/排序，再反射拿内部 Preference 列表（`f4509c`，字段名被 R8 混淆，
-     * 用「List 且包含目标 Preference」定位）做一次 move，最后 `notifyHierarchyChanged` 让列表刷新。
+     * ⚠ 第二轮真机修复的关键：androidx 的列表适配器每次重建时会 `Collections.sort(preferenceGroup.f4509c)`
+     * （反编译 androidx/preference/C.java 的 d() 方法），排序规则是 `Preference.order`（再按标题）。
+     * 所以只改内部 ArrayList 的先后顺序会被下一次 notify 重建（本身就是我们 notify 触发的）排回去，
+     * **必须给所有兄弟行重新分配单调递增的 order**，让 sort 之后也是期望顺序。
+     *
+     * 流程：① 反射内部 Preference 列表（字段名被 R8 混淆，按「List 且包含目标 Preference」定位并打日志）；
+     * ② 计算期望顺序（把目标行移到 targetIndex）；③ 按期望顺序 setOrder(0..n)；
+     * ④ 同步内部 list 顺序（adapter 重建前立即可读）；⑤ notifyHierarchyChanged/notifyChanged。
      */
     @Suppress("UNCHECKED_CAST")
-    fun movePreferenceToIndex(group: Any?, preference: Any?, targetIndex: Int): Boolean {
-        if (group == null || preference == null || targetIndex < 0) return false
+    fun movePreferenceToIndex(
+        module: XposedModule,
+        group: Any?,
+        preference: Any?,
+        targetIndex: Int,
+    ): Boolean {
+        if (group == null || preference == null || targetIndex < 0) {
+            module.log(Log.WARN, TAG, "movePreferenceToIndex: invalid args (group=${group?.javaClass?.name})")
+            return false
+        }
         val internalList = ScReflect.firstFieldValue(group) { _, value ->
             value is List<*> && value.any { it === preference }
-        } as? MutableList<Any?> ?: return false
-        val currentIndex = internalList.indexOfFirst { it === preference }
-        if (currentIndex < 0) return false
-        if (currentIndex == targetIndex) {
-            notifyPreferenceHierarchyChanged(group)
-            return true
+        } as? MutableList<Any?>
+        if (internalList == null) {
+            module.log(
+                Log.WARN,
+                TAG,
+                "movePreferenceToIndex: internal preference list not found on ${group.javaClass.name}",
+            )
+            return false
         }
+        val currentIndex = internalList.indexOfFirst { it === preference }
+        if (currentIndex < 0) {
+            module.log(Log.WARN, TAG, "movePreferenceToIndex: target preference not in internal list")
+            return false
+        }
+
+        // 期望顺序：先把目标行摘出来，再插到目标索引
+        val desired = ArrayList<Any?>(internalList.size)
+        internalList.forEach { if (it !== preference) desired.add(it) }
+        val insertAt = targetIndex.coerceAtMost(desired.size)
+        desired.add(insertAt, preference)
+
+        // 关键步骤：按期望顺序重排 order（adapter 的 Collections.sort 只认 order）
+        var orderFailures = 0
+        desired.forEachIndexed { index, item ->
+            if (!setPreferenceOrder(item, index)) orderFailures++
+        }
+        if (orderFailures > 0) {
+            module.log(
+                Log.WARN,
+                TAG,
+                "movePreferenceToIndex: setOrder failed on $orderFailures/${desired.size} preferences",
+            )
+        }
+
+        // 同步内部 list 顺序（adapter 重建是异步 post 的，先后顺序不影响最终结果）
+        try {
+            internalList.clear()
+            internalList.addAll(desired)
+        } catch (t: Throwable) {
+            module.log(Log.WARN, TAG, "movePreferenceToIndex: mutate internal list failed", t)
+        }
+        notifyPreferenceHierarchyChanged(group)
+
+        if (currentIndex != insertAt) {
+            module.log(
+                Log.INFO,
+                TAG,
+                "moved preference to index $insertAt (was $currentIndex), order=" +
+                    desired.map { preferenceKeyOf(it) },
+            )
+        }
+        return orderFailures == 0
+    }
+
+    private fun setPreferenceOrder(preference: Any?, order: Int): Boolean {
+        val target = preference ?: return false
+        val method = ScReflect.findInstanceMethod(
+            target.javaClass,
+            listOf("setOrder"),
+            arrayOf<Any?>(order),
+        ) ?: return false
         return try {
-            val item = internalList.removeAt(currentIndex)
-            internalList.add(targetIndex.coerceAtMost(internalList.size), item)
-            notifyPreferenceHierarchyChanged(group)
+            method.invoke(target, order)
             true
         } catch (t: Throwable) {
             false
         }
     }
+
+    private fun preferenceKeyOf(preference: Any?): String? =
+        ScReflect.call(preference, listOf("getKey")) as? String
 
     /** 通知 PreferenceGroup/Preference 刷新列表（两者方法名在本 build 都保留，存在哪个用哪个）。 */
     fun notifyPreferenceHierarchyChanged(target: Any?) {
