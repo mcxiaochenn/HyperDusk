@@ -126,37 +126,37 @@ jobs:
           echo "using $apksigner"
 
           fingerprint() {
-            local apk="$1" out raw
+            # 注意：函数 stdout 只能输出一行 64 位小写 hex 指纹（调用方用 $(...) 捕获），
+            # 所有诊断信息一律走 stderr（>&2），否则会污染 actual 变量。
+            local apk="$1" out fp
             if ! out="$("$apksigner" verify --print-certs "$apk" 2>&1)"; then
               echo "::error::apksigner verify failed for $apk:" >&2
               printf '%s\n' "$out" >&2
               return 1
             fi
-            # 诊断：把 apksigner 原始输出打出来。build-tools 37.0.0 的格式是
+            # 诊断（stderr）：build-tools 37.0.0 的格式是
             #   "V2 Signer: certificate SHA-256 digest: <64 hex>"
             # （旧版是 "Signer #1 certificate SHA-256 digest: ..."），
             # 之前用 "^Signer #1 certificate ..." 锚定解析就会得到空值。
-            echo "---- apksigner verify --print-certs $(basename "$apk") ----"
-            printf '%s\n' "$out"
-            echo "---- end apksigner output ----"
+            echo "---- apksigner verify --print-certs $(basename "$apk") ----" >&2
+            printf '%s\n' "$out" >&2
+            echo "---- end apksigner output ----" >&2
             # 宽松解析：任意含 "SHA-256 digest" 的行，取第一条，去掉前缀/冒号/空白并统一小写。
             # 用 `sed -n '1p'` 而不是 `head -n1`：本步骤开了 `set -o pipefail`，head 提前关闭管道
             # 会让上游 grep 收到 SIGPIPE(141) 而被误判为失败；awk/sed 会读完整个输入，不会有这个问题。
-            raw="$(printf '%s\n' "$out" \
+            # 末尾 `|| true`：grep 无匹配时管道返回非 0，避免 `set -e` 直接退出、从而走到下面的明确报错。
+            fp="$(printf '%s\n' "$out" \
               | grep -i 'SHA-256 digest' \
               | sed -n '1p' \
               | sed 's/.*digest: *//' \
               | tr -d '[:space:]:' \
               | tr '[:upper:]' '[:lower:]')" || true
-            # 只接受 64 位小写 hex，其它一律视为解析失败（不拿空值/脏值去比 expected）
-            case "$raw" in
-              *[!0-9a-f]*) raw="" ;;
-            esac
-            if [ ${#raw} -ne 64 ]; then
-              echo "::error::could not parse a 64-hex SHA-256 fingerprint from apksigner output for $apk (see full output above)" >&2
+            # 只接受 ^[0-9a-f]{64}$，其它（空值/多行/脏值/大写）一律视为解析失败
+            if ! printf '%s' "$fp" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "::error::could not parse a 64-hex SHA-256 fingerprint from apksigner output for $apk (see apksigner output above)" >&2
               return 1
             fi
-            printf '%s\n' "$raw"
+            printf '%s\n' "$fp"
           }
 
           apk_dir=build/app/outputs/flutter-apk
