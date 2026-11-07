@@ -126,17 +126,37 @@ jobs:
           echo "using $apksigner"
 
           fingerprint() {
-            local out
-            if ! out="$("$apksigner" verify --print-certs "$1" 2>&1)"; then
-              echo "::error::apksigner verify failed for $1:" >&2
+            local apk="$1" out raw
+            if ! out="$("$apksigner" verify --print-certs "$apk" 2>&1)"; then
+              echo "::error::apksigner verify failed for $apk:" >&2
               printf '%s\n' "$out" >&2
               return 1
             fi
-            printf '%s\n' "$out" \
-              | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
-              | awk 'NR==1 { print }' \
-              | tr -d ':' \
-              | tr '[:upper:]' '[:lower:]'
+            # 诊断：把 apksigner 原始输出打出来。build-tools 37.0.0 的格式是
+            #   "V2 Signer: certificate SHA-256 digest: <64 hex>"
+            # （旧版是 "Signer #1 certificate SHA-256 digest: ..."），
+            # 之前用 "^Signer #1 certificate ..." 锚定解析就会得到空值。
+            echo "---- apksigner verify --print-certs $(basename "$apk") ----"
+            printf '%s\n' "$out"
+            echo "---- end apksigner output ----"
+            # 宽松解析：任意含 "SHA-256 digest" 的行，取第一条，去掉前缀/冒号/空白并统一小写。
+            # 用 `sed -n '1p'` 而不是 `head -n1`：本步骤开了 `set -o pipefail`，head 提前关闭管道
+            # 会让上游 grep 收到 SIGPIPE(141) 而被误判为失败；awk/sed 会读完整个输入，不会有这个问题。
+            raw="$(printf '%s\n' "$out" \
+              | grep -i 'SHA-256 digest' \
+              | sed -n '1p' \
+              | sed 's/.*digest: *//' \
+              | tr -d '[:space:]:' \
+              | tr '[:upper:]' '[:lower:]')" || true
+            # 只接受 64 位小写 hex，其它一律视为解析失败（不拿空值/脏值去比 expected）
+            case "$raw" in
+              *[!0-9a-f]*) raw="" ;;
+            esac
+            if [ ${#raw} -ne 64 ]; then
+              echo "::error::could not parse a 64-hex SHA-256 fingerprint from apksigner output for $apk (see full output above)" >&2
+              return 1
+            fi
+            printf '%s\n' "$raw"
           }
 
           apk_dir=build/app/outputs/flutter-apk
