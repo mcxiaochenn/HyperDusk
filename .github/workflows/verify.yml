@@ -3,6 +3,7 @@ name: Verify
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -249,3 +250,73 @@ jobs:
           path: |
             build/app/outputs/flutter-apk/app-release.apk
             build/app/outputs/flutter-apk/SHA256SUMS-release
+
+  release:
+    # 打 tag（v*）时才发布。tag 推送会重新跑一遍 verify，构建 + 签名校验 + 结构审计全部通过后才到这一步。
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hyperdusk-release
+          path: dist
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dist/SHA256SUMS-release
+          cd dist
+          sha256sum app-release.apk > SHA256SUMS
+          cat SHA256SUMS
+          ls -l
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: HyperDusk ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            dist/app-release.apk
+            dist/SHA256SUMS
+          body: |
+            HyperDusk 的第一个公开版本：一个面向 **HyperOS 4.0 / Android 17（API 37）** 的独立 libxposed 模块，
+            在系统设置「辅助功能 → 快捷手势」里扩展两项能力。
+
+            ## 功能
+
+            - **背部轻敲 → 手电筒**：给「轻敲两下 / 轻敲三下」的下拉列表增加「手电筒」选项，选中后敲击背部即可开关手电筒。
+            - **快捷手势 → 双击音量上键**：在快捷手势列表新增一行，二级菜单与「双击电源键」完全一致；仅灭屏时触发，
+              媒体播放 / 通话中不触发，触发前先唤醒屏幕。
+
+            ## 安装
+
+            1. 下载 `app-release.apk` 安装（固定 release 签名，后续版本可直接覆盖升级）。
+            2. 在 LSPosed / Vector 中启用 HyperDusk；作用域由模块固定为四项（`system`、`com.android.settings`、
+               `com.android.systemui`、`com.miui.securitycore`），无需手动勾选。
+            3. 重启手机，让 `system_server` 与 `com.miui.securitycore` 重新注入。
+            4. 打开系统设置 → 辅助功能 → 快捷手势，配置对应手势。
+
+            ## 要求
+
+            - HyperOS 4.0 / Android 17 真机；框架需实现 libxposed API 102，且支持 `system_server` 注入（`PROP_CAP_SYSTEM`）。
+            - 模块 App 自身是状态页 / 设置页，不参与注入（libxposed API 101 起的既定行为）。
+
+            ## 已知限制
+
+            - 双击音量上键在灭屏触发时会同时留下两次正常音量步进（与系统「双击音量下极速相机」的既有行为一致）。
+            - 背部轻敲 sensor 只在亮屏时由系统注册，灭屏时不会触发。
+            - 国际版未适配（国际版「双击电源键」页会直接关闭，因此「双击音量上键」入口只在非国际版注入）。
+            - 部分 Hook 依赖 securitycore 的内部实现（混淆名随系统升级可能变化），代码带运行时守卫，失效时降级不崩。
+
+            ## 校验
+
+            `SHA256SUMS` 为 `app-release.apk` 的 SHA-256。构建日志里同时输出 APK 签名证书指纹校验结果；
+            签名漂移会让 CI 直接失败。
+
+            完整改动见 [提交记录](https://github.com/mcxiaochenn/HyperDusk/commits/main)。

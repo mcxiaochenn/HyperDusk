@@ -19,6 +19,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 时机：HyperDuskModule#onSystemServerStarting 里用 param.classLoader 调 [install]。
  * 这时 PhoneWindowManager / BaseMiuiPhoneWindowManager 还没构造（systemReady 更晚），
  * 所以这里只做方法 hook，不 hook 构造器；方法 hook 对之后创建的实例同样生效。
+ *
+ * 总开关（规格 §8）：安装期不读 `module.enabled`，两个业务入口在运行时判断——
+ * 背敲手电筒在 [installBackTapTorchToggleHook] 的 hook 内、双击音量上键在
+ * [VolumeUpDoubleClickHook.dispatch] 入口。这样 App 里切换开关立即生效，不用重启 system_server。
  */
 internal object SystemServerHooks {
 
@@ -40,19 +44,40 @@ internal object SystemServerHooks {
     /** 只打一次「背敲手电筒已按翻转逻辑放行」的日志。 */
     private val loggedTorchToggleFix = AtomicBoolean(false)
 
+    /** 总开关关闭导致的跳过只打一次日志，避免每次背敲都刷屏（规格 §8.4）。 */
+    private val loggedDisabledSkip = AtomicBoolean(false)
+
+    /** 总开关读取失败同样只打一次（读不到时按开启处理，不能因为框架问题静默废掉功能）。 */
+    private val loggedSwitchReadFailure = AtomicBoolean(false)
+
     fun install(module: XposedModule, classLoader: ClassLoader) {
-        if (!HyperDuskPrefs.getBoolean(HyperDuskPrefs.KEY_MODULE_ENABLED, true)) {
-            module.log(
-                Log.INFO,
-                TAG,
-                "module disabled by remote preference ${HyperDuskPrefs.KEY_MODULE_ENABLED}, " +
-                    "skip system_server hooks",
-            )
-            return
-        }
+        // 总开关不再在这里判断（规格 §8）：安装期 early return 会导致「关掉开关 → hook 根本没装 →
+        // 重新打开必须重启 system_server 才生效」，等于开关只能用一半。
+        // 现在始终安装 hook，开关改在背敲手电筒拦截点（triggerFunction hook 内）运行时判断。
+        module.log(
+            Log.INFO,
+            TAG,
+            "installing system_server hooks (module.enabled is evaluated at gesture time)",
+        )
         installBackTapTorchHook(module, classLoader)
         installBackTapTorchToggleHook(module, classLoader)
         VolumeUpDoubleClickHook.install(module, classLoader)
+    }
+
+    /**
+     * 读总开关（规格 §8）。
+     *
+     * 每次手势触发时读 RemotePreferences：模块 App 写 `module.enabled` 后框架会推给被 hook 进程，
+     * 不需要重启 system_server。读失败（框架没有 remote 能力 / 服务异常）按「开启」处理，
+     * 保持模块的默认行为，不能因为读不到配置就让用户以为开关坏了。
+     */
+    private fun isModuleEnabled(module: XposedModule): Boolean = try {
+        HyperDuskPrefs.getBoolean(HyperDuskPrefs.KEY_MODULE_ENABLED, true)
+    } catch (t: Throwable) {
+        if (loggedSwitchReadFailure.compareAndSet(false, true)) {
+            module.log(Log.WARN, TAG, "read ${HyperDuskPrefs.KEY_MODULE_ENABLED} failed, treat as enabled", t)
+        }
+        true
     }
 
     /**
@@ -100,6 +125,18 @@ internal object SystemServerHooks {
             val isBackTapTorch = function == FUNCTION_TURN_ON_TORCH &&
                 (action == ACTION_BACK_DOUBLE_TAP || action == ACTION_BACK_TRIPLE_TAP)
             if (!isBackTapTorch) {
+                chain.proceed()
+            } else if (!isModuleEnabled(module)) {
+                // 规格 §8.2：总开关关闭时在发广播之前就把控制权交回系统，
+                // 背敲手电筒回到「未装模块」的行为，其它手势 hook 也不受影响。
+                if (loggedDisabledSkip.compareAndSet(false, true)) {
+                    module.log(
+                        Log.INFO,
+                        TAG,
+                        "back tap torch paused: ${HyperDuskPrefs.KEY_MODULE_ENABLED}=false " +
+                            "(action=$action), original logic restored",
+                    )
+                }
                 chain.proceed()
             } else {
                 try {

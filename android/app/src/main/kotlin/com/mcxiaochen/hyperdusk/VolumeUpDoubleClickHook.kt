@@ -57,6 +57,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    launch_camera 在 launchCamera 里被转成 reason "power_double_tap"（:1792-1794），
  *    mi_pay 在 launchMiPay 里被转成 "double_click_power"（:1755），其余原样；
  *    hapticFeedback=true 与系统双击电源键一致。
+ *
+ * 总开关（规格 §8.3）：hook 安装不受开关影响，[dispatch] 入口每次读 RemotePreferences 的
+ * `module.enabled`，关闭时直接返回；开关切换不需要重启 system_server。
  */
 internal object VolumeUpDoubleClickHook {
 
@@ -107,6 +110,9 @@ internal object VolumeUpDoubleClickHook {
     private val loggedTriggerFailure = AtomicBoolean(false)
     private val loggedInvalidValue = AtomicBoolean(false)
     private val loggedAudioSkip = AtomicBoolean(false)
+
+    /** 总开关关闭导致的跳过只打一次日志，避免每次双击都刷屏（规格 §8.4）。 */
+    private val loggedDisabled = AtomicBoolean(false)
 
     @Volatile
     private var mainHandler: Handler? = null
@@ -273,6 +279,19 @@ internal object VolumeUpDoubleClickHook {
 
     private fun dispatch(module: XposedModule, interactiveFallback: Boolean) {
         try {
+            // 规格 §8.3：总开关在运行时判断。hook 已经装好不撤（撤了就只能重启 system_server 才能恢复），
+            // 关闭时在这里直接返回，等于回到「没装模块」的行为。
+            if (!HyperDuskPrefs.getBoolean(HyperDuskPrefs.KEY_MODULE_ENABLED, true)) {
+                if (loggedDisabled.compareAndSet(false, true)) {
+                    module.log(
+                        Log.INFO,
+                        TAG,
+                        "volume up double click paused: ${HyperDuskPrefs.KEY_MODULE_ENABLED}=false",
+                    )
+                }
+                return
+            }
+
             val context = ShortCutActionsBridge.context
             if (context == null) {
                 if (loggedMissingContext.compareAndSet(false, true)) {

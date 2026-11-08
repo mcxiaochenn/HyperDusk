@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="1024" height="1024">
+<defs>
+<linearGradient id="dusk" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#0B1026"/><stop offset="45%" stop-color="#1E1B4B"/><stop offset="72%" stop-color="#4A2E5C"/><stop offset="100%" stop-color="#C0714F"/></linearGradient>
+<radialGradient id="horizon" gradientUnits="userSpaceOnUse" cx="54" cy="104" r="46">
+<stop stop-color="#F2B27A" stop-opacity="0.42"/><stop offset="100%" stop-color="#F2B27A" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="moon" gradientUnits="userSpaceOnUse" x1="0" y1="27" x2="0" y2="73">
+<stop stop-color="#FFF6EA"/><stop offset="100%" stop-color="#FFD9B0"/>
+</linearGradient>
+<mask id="crescent" maskUnits="userSpaceOnUse" x="0" y="0" width="108" height="108" style="mask-type:luminance">
+<circle cx="52" cy="50" r="23" fill="white"/><circle cx="61" cy="41" r="20" fill="black"/>
+</mask>
+</defs>
+<rect width="108" height="108" fill="url(#dusk)"/>
+<circle cx="54" cy="104" r="46" fill="url(#horizon)"/>
+<rect width="108" height="108" fill="url(#moon)" mask="url(#crescent)"/>
+<g fill="#FFF1DC"><rect x="71" y="29.4" width="12" height="3.2" rx="1.6"/><rect x="75.4" y="25" width="3.2" height="12" rx="1.6"/></g>
+</svg>

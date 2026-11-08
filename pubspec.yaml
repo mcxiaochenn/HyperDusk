@@ -1,7 +1,7 @@
 name: hyperdusk
-description: Independent Flutter and Rust libxposed module scaffold for Android 17.
+description: HyperOS 4 gesture enhancement module built on Flutter and Rust.
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.0.1+1
 
 environment:
   sdk: ^3.13.1
@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_miuix: ^1.3.0
   flutter_rust_bridge: 2.14.0-beta.2
   flutter_rust_bridge_hooks: 2.14.0-beta.2
 
@@ -19,3 +20,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/branding/app_icon.png
