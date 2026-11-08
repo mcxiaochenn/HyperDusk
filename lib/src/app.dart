@@ -26,7 +26,14 @@ class HyperDuskApp extends StatelessWidget {
       themeMode: ThemeMode.system,
       builder: (context, child) => MiuixThemeController(
         colorSchemeMode: MiuixColorSchemeMode.system,
-        child: child ?? const SizedBox.shrink(),
+        // 透明 Material 只作为 Text 的默认样式祖先：MiuixScaffold 不是 Material
+        // 页面，缺了它所有正文都会带上 Flutter 的黄色缺省下划线（MiuixTopAppBar
+        // 内部自带 Material，所以只有页面主体的文字出问题）。视觉组件仍全部由
+        // flutter_miuix 绘制，这里没有使用任何 Material 视觉组件。
+        child: Material(
+          type: MaterialType.transparency,
+          child: child ?? const SizedBox.shrink(),
+        ),
       ),
       home: HomePage(controller: controller),
     );

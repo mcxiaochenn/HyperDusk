@@ -54,8 +54,7 @@ class _HomePageState extends State<HomePage> {
           topBar: MiuixTopAppBar(
             title: 'HyperDusk',
             largeTitle: 'HyperDusk',
-            // 不传 subtitle：flutter_miuix 1.3.0 在大标题 + 副标题组合下会把副标题
-            // 画到标题下沿上（重叠），而本页的定位说明在下面的卡片里已经足够清楚。
+            subtitle: 'HyperOS 4 · 快捷手势增强',
             scrollBehavior: _scrollBehavior,
             actions: [
               MiuixIconButton(

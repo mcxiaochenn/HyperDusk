@@ -56,6 +56,11 @@ adb shell settings get system hyperdusk_double_click_volume_up
 
 页面结构是 miuix 的「小标题 + 分组卡片 + 列表行」：状态卡（框架服务 / 模块总开关）、手势功能卡（两行可点项，行尾直接显示当前动作）、作用域卡（四项各自说明注入作用）、关于卡。
 
+<p align="center">
+  <img src="docs/screenshots/home.png" width="260" alt="首页">
+  <img src="docs/screenshots/about.png" width="260" alt="关于">
+</p>
+
 ## 构建与验证
 
 构建全部交给 CI（[`.github/workflows/verify.yml`](.github/workflows/verify.yml)），本地只做代码修改与静态检查。CI 每次 push 会跑：
