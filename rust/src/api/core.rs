@@ -1,5 +1,5 @@
 const DATA_SCHEMA_VERSION: u32 = 1;
-const APP_VERSION: &str = "0.1.0";
+const APP_VERSION: &str = "0.0.1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreStatus {
@@ -65,7 +65,7 @@ mod tests {
         let about = get_about_info();
 
         assert_eq!(about.app_name, "HyperDusk");
-        assert_eq!(about.app_version, "0.1.0");
+        assert_eq!(about.app_version, "0.0.1");
         assert_eq!(about.package_name, "com.mcxiaochen.hyperdusk");
         assert_eq!(about.license, "MIT");
         assert!(!about.architecture.is_empty());
