@@ -61,6 +61,8 @@ adb shell settings get system hyperdusk_double_click_volume_up
   <img src="docs/screenshots/about.png" width="260" alt="关于">
 </p>
 
+<p align="center"><sub>截图来自 Xiaomi 17 Pro（HyperOS 4 / Android 17，深色模式）</sub></p>
+
 ## 构建与验证
 
 构建全部交给 CI（[`.github/workflows/verify.yml`](.github/workflows/verify.yml)），本地只做代码修改与静态检查。CI 每次 push 会跑：
